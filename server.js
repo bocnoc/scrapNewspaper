@@ -2,6 +2,40 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
 const path = require('path');
+const NodeCache = require('node-cache');
+
+// Initialize caches with 15 minutes TTL
+const articleCache = new NodeCache({ stdTTL: 900, checkperiod: 120 });
+const categoryCache = new NodeCache({ stdTTL: 900, checkperiod: 120 });
+const BROWSER_OPTIONS = {
+    headless: 'new',
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-zygote',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-blink-features=AutomationControlled'
+    ],
+    defaultViewport: { width: 1280, height: 800 }
+};
+
+// Reuse browser instance
+let browserInstance = null;
+
+async function getBrowser() {
+    if (!browserInstance) {
+        browserInstance = await puppeteer.launch(BROWSER_OPTIONS);
+        // Handle browser disconnection
+        browserInstance.on('disconnected', () => {
+            browserInstance = null;
+        });
+    }
+    return browserInstance;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,6 +79,7 @@ app.get('/', (req, res) => {
 // API endpoint to fetch article content
 app.post('/api/fetch-article', async (req, res) => {
     let browser;
+    let page;
     try {
         let { url } = req.body;
         
@@ -53,168 +88,168 @@ app.post('/api/fetch-article', async (req, res) => {
         }
 
         // Clean up the URL
-        url = url.trim();
-        // Remove any hash fragments
-        url = url.split('#')[0];
-        
-        // Ensure the URL has a protocol
+        url = url.trim().split('#')[0];
         if (!url.startsWith('http')) {
             url = 'https://' + url.replace(/^\/\//, '');
         }
 
         console.log(`Fetching article from: ${url}`);
 
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-            defaultViewport: { width: 1280, height: 800 }
-        });
+        // Check cache first
+        const cacheKey = `article:${url}`;
+        const cachedData = articleCache.get(cacheKey);
+        if (cachedData) {
+            console.log('Serving from cache:', url);
+            return res.json(cachedData);
+        }
 
-        const page = await browser.newPage();
+        // Get browser instance (reuse existing or create new)
+        browser = await getBrowser();
+        page = await browser.newPage();
         
-        // Set user agent to avoid detection
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        
-        // Enable request interception to block unnecessary resources
+        // Set up request interception to block unnecessary resources
         await page.setRequestInterception(true);
+        const blockedResources = ['image', 'stylesheet', 'font', 'media', 'other'];
         page.on('request', (req) => {
-            const resourceType = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+            if (blockedResources.includes(req.resourceType())) {
                 req.abort();
             } else {
                 req.continue();
             }
         });
+
+        // Set user agent and other headers
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        });
         
-        try {
-            // Navigate to the article URL
-            console.log(`Navigating to: ${url}`);
-            const response = await page.goto(url, { 
-                waitUntil: ['domcontentloaded', 'networkidle0'],
-                timeout: 30000 // 30 seconds timeout
-            });
+        // Navigate to the URL with optimized parameters
+        console.log(`Navigating to: ${url}`);
+        const response = await page.goto(url, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 15000 // 15 seconds timeout
+        });
 
-            if (!response || !response.ok()) {
-                const status = response ? response.status() : 'No response';
-                console.error(`Failed to load page: ${status} - ${url}`);
-                throw new Error(`Không thể tải trang: Lỗi ${status}`);
-            }
-            // Set a user agent to avoid being blocked
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            
-            // Wait for the main content to load
-            await page.waitForSelector('article, .fck_detail, .content-detail, .article-content, .article-body, .article-detail, .content, main', { timeout: 10000 });
-            
-            // Get the main content using page.evaluate
-            const articleData = await page.evaluate(() => {
-                // Function to get the main content element
-                const getMainContent = () => {
-                    const contentSelectors = [
-                        'article.fck_detail',
-                        'article.content-detail',
-                        'article.article-detail',
-                        '.fck_detail',
-                        '.content-detail',
-                        '.article-content',
-                        '.article-body',
-                        '.article_content',
-                        '.entry-content',
-                        '.post-content',
-                        'article',
-                        'main',
-                        '.main-content',
-                        '#main-content',
-                        '#content',
-                        '.content',
-                        'body'
-                    ];
-
-                    for (const selector of contentSelectors) {
-                        const el = document.querySelector(selector);
-                        if (el && el.textContent.trim().length > 300) {
-                            return el;
-                        }
-                    }
-                    return document.body;
-                };
-
-                const mainContent = getMainContent();
-                
-                // Get the title
-                const titleElement = document.querySelector('h1.title-detail, h1.title-news, h1.title_news_detail, h1.title_news, h1') || 
-                                    document.querySelector('h1') || 
-                                    document.querySelector('title');
-                const title = titleElement ? titleElement.textContent.trim() : 'Không có tiêu đề';
-                
-                // Get the description
-                const descriptionElement = document.querySelector('p.description, .description, .sapo, .sapo-detail, .lead, .summary') || 
-                                         document.querySelector('meta[property="og:description"]') || 
-                                         document.querySelector('meta[name="description"]');
-                const description = descriptionElement ? (descriptionElement.content || descriptionElement.textContent).trim() : '';
-                
-                // Clean up the content
-                const cleanElement = (element) => {
-                    // Clone to avoid modifying the original
-                    const clone = element.cloneNode(true);
-                    
-                    // Remove unwanted elements
-                    const selectorsToRemove = [
-                        'script', 'style', 'iframe', 'noscript', 'button', 'form', 'input', 
-                        'select', 'textarea', 'nav', 'header', 'footer', 'aside', 'figure',
-                        '.ad', '.ads', '.advertisement', '.banner', '.social', '.share', 
-                        '.comment', '.related-news', '.box-tinlienquan', '.box-ads', 
-                        '.box-adv', '.box-video', '.box-comment', '.box-related', '.box-tag', 
-                        '.box-news', '.box-banner', '.box-social', '.box-news-focus', 
-                        '.box-category', '.box-tinlienquan', '.box-tinmoi', '.box-tinnoibat',
-                        '.box-tintuc', '.box-tintucmoi', '.box-tintucnoibat', 'img', 'picture',
-                        'video', 'audio', 'source', 'svg', 'canvas', 'map', 'object', 'embed'
-                    ];
-                    
-                    selectorsToRemove.forEach(selector => {
-                        const elements = clone.querySelectorAll(selector);
-                        elements.forEach(el => el.remove());
-                    });
-                    
-                    // Remove empty elements
-                    const allElements = clone.querySelectorAll('*');
-                    allElements.forEach(el => {
-                        if (!el.textContent.trim() && el.children.length === 0) {
-                            el.remove();
-                        }
-                    });
-                    
-                    return clone.innerHTML;
-                };
-                
-                const content = cleanElement(mainContent);
-                
-                return {
-                    title: title,
-                    description: description,
-                    content: content
-                };
-            });
-            
-            // Close the browser
-            await browser.close();
-            
-            // Send the response
-            res.json({
-                title: articleData.title,
-                description: articleData.description,
-                content: articleData.content,
-                url: url
-            });
-        } catch (error) {
-            if (browser) {
-                await browser.close();
-            }
-            console.error('Lỗi khi lấy nội dung bài báo:', error);
-            res.status(500).json({ error: 'Không thể lấy nội dung bài báo' });
+        if (!response || !response.ok()) {
+            const status = response ? response.status() : 'No response';
+            console.error(`Failed to load page: ${status} - ${url}`);
+            throw new Error(`Không thể tải trang: Lỗi ${status}`);
         }
+
+        // Wait for the main content to load with a shorter timeout
+        try {
+            await page.waitForSelector('article, .fck_detail, .content-detail, .article-content, .article-body, .article-detail, .content, main', { 
+                timeout: 10000 
+            });
+        } catch (e) {
+            console.log('Main content not found, continuing with available content');
+        }
+            
+        // Get the main content using page.evaluate
+        const articleData = await page.evaluate(() => {
+            // Function to get the main content element
+            const getMainContent = () => {
+                const contentSelectors = [
+                    'article.fck_detail',
+                    'article.content-detail',
+                    'article.article-detail',
+                    '.fck_detail',
+                    '.content-detail',
+                    '.article-content',
+                    '.article-body',
+                    '.article_content',
+                    '.entry-content',
+                    '.post-content',
+                    'article',
+                    'main',
+                    '.main-content',
+                    '#main-content',
+                    '#content',
+                    '.content',
+                    'body'
+                ];
+
+                for (const selector of contentSelectors) {
+                    const el = document.querySelector(selector);
+                    if (el && el.textContent.trim().length > 300) {
+                        return el;
+                    }
+                }
+                return document.body;
+            };
+
+            const mainContent = getMainContent();
+            
+            // Get the title
+            const titleElement = document.querySelector('h1.title-detail, h1.title-news, h1.title_news_detail, h1.title_news, h1') || 
+                                document.querySelector('h1') || 
+                                document.querySelector('title');
+            const title = titleElement ? titleElement.textContent.trim() : 'Không có tiêu đề';
+            
+            // Get the description
+            const descriptionElement = document.querySelector('p.description, .description, .sapo, .sapo-detail, .lead, .summary') || 
+                                     document.querySelector('meta[property="og:description"]') || 
+                                     document.querySelector('meta[name="description"]');
+            const description = descriptionElement ? (descriptionElement.content || descriptionElement.textContent).trim() : '';
+            
+            // Clean up the content
+            const cleanElement = (element) => {
+                // Clone to avoid modifying the original
+                const clone = element.cloneNode(true);
+                
+                // Remove unwanted elements
+                const selectorsToRemove = [
+                    'script', 'style', 'iframe', 'noscript', 'button', 'form', 'input', 
+                    'select', 'textarea', 'nav', 'header', 'footer', 'aside', 'figure',
+                    '.ad', '.ads', '.advertisement', '.banner', '.social', '.share', 
+                    '.comment', '.related-news', '.box-tinlienquan', '.box-ads', 
+                    '.box-adv', '.box-video', '.box-comment', '.box-related', '.box-tag', 
+                    '.box-news', '.box-banner', '.box-social', '.box-news-focus', 
+                    '.box-category', '.box-tinlienquan', '.box-tinmoi', '.box-tinnoibat',
+                    '.box-tintuc', '.box-tintucmoi', '.box-tintucnoibat', 'img', 'picture',
+                    'video', 'audio', 'source', 'svg', 'canvas', 'map', 'object', 'embed'
+                ];
+                
+                selectorsToRemove.forEach(selector => {
+                    const elements = clone.querySelectorAll(selector);
+                    elements.forEach(el => el.remove());
+                });
+                
+                // Remove empty elements
+                const allElements = clone.querySelectorAll('*');
+                allElements.forEach(el => {
+                    if (!el.textContent.trim() && el.children.length === 0) {
+                        el.remove();
+                    }
+                });
+                
+                return clone.innerHTML;
+            };
+            
+            const content = cleanElement(mainContent);
+            
+            return {
+                title: title,
+                description: description,
+                content: content
+            };
+        });
+        
+        // Close the browser
+        await browser.close();
+        
+        // Send the response
+        res.json({
+            title: articleData.title,
+            description: articleData.description,
+            content: articleData.content,
+            url: url
+        });
     } catch (error) {
-        console.error('Lỗi:', error);
-        res.status(500).json({ error: 'Lỗi máy chủ nội bộ' });
+        console.error('Lỗi khi lấy nội dung bài báo:', error);
+        res.status(500).json({ error: 'Không thể lấy nội dung bài báo' });
     }
 });
 
@@ -256,7 +291,6 @@ app.get('/api/popular-sources', (req, res) => {
     res.json({ sources });
 });
 
-// Start server
 // Helper function to extract article data from HTML
 function extractArticles($) {
     const articles = [];
@@ -279,47 +313,32 @@ function extractArticles($) {
         const articleElements = $(selector);
         
         if (articleElements.length > 0) {
-            articleElements.each((index, element) => {
-                const $article = $(element);
-                let title = '';
-                let url = '';
-                let description = '';
-                let image = '';
-                
-                // Try to find title and URL
-                const titleElement = $article.find('h2 a, h3 a, .title-news a, .title a, .title-news').first();
-                if (titleElement.length) {
-                    title = titleElement.text().trim();
-                    url = titleElement.attr('href') || '';
-                }
-                
-                // Try to find description
-                description = $article.find('.description, .sapo, .lead, .summary, p:first-child')
-                    .first().text().trim();
-                
-                // Try to find image
-                const imgElement = $article.find('img').first();
-                if (imgElement.length) {
-                    image = imgElement.attr('src') || imgElement.attr('data-src') || '';
-                }
-                
-                // Only add if we have both title and URL
-                if (title && url) {
-                    // Make URL absolute if it's relative
-                    if (url && !url.startsWith('http')) {
-                        url = new URL(url, 'https://vnexpress.net').href;
-                    }
+            articleElements.each((i, el) => {
+                try {
+                    const $el = $(el);
+                    const titleElement = $el.find('h2 a, h3 a, .title-news a, .title a').first();
+                    
+                    if (!titleElement.length) return;
+                    
+                    const title = titleElement.text().trim();
+                    const url = titleElement.attr('href');
+                    
+                    if (!url) return;
+                    
+                    const description = $el.find('.description, .sapo, .lead, .summary').text().trim();
+                    const image = $el.find('img').attr('src') || $el.find('img').data('src') || '';
                     
                     articles.push({
-                        title: title,
-                        url: url,
-                        description: description,
-                        image: image
+                        title,
+                        url: url.startsWith('http') ? url : `https://vnexpress.net${url}`,
+                        description,
+                        image: image.startsWith('//') ? `https:${image}` : image.startsWith('/') ? `https://vnexpress.net${image}` : image
                     });
+                } catch (e) {
+                    console.error('Error processing article:', e);
                 }
             });
             
-            // If we found articles, break the loop
             if (articles.length > 0) {
                 break;
             }
@@ -337,170 +356,167 @@ app.get('/api/category/:category', async (req, res) => {
         return res.status(400).json({ error: 'Vui lòng chọn chuyên mục' });
     }
 
-    // Clean and validate the category parameter
+    // Clean and validate category
     category = category.trim().toLowerCase();
     
-    // Remove any leading/trailing slashes and encode the category
-    category = category.replace(/^\/+|\/+$/g, '');
-    
-    // Check if the category is a valid VnExpress category path
-    if (!/^[a-z0-9-]+(\/[a-z0-9-]+)*$/.test(category)) {
-        return res.status(400).json({ error: 'Đường dẫn chuyên mục không hợp lệ' });
+    // Check cache first
+    const cacheKey = `category:${category}`;
+    const cachedData = categoryCache.get(cacheKey);
+    if (cachedData) {
+        console.log('Serving category from cache:', category);
+        return res.json(cachedData);
     }
+    
+    // Map category to VnExpress URL
+    const categoryMap = {
+        'thoi-su': 'thoi-su',
+        'the-gioi': 'the-gioi',
+        'kinh-doanh': 'kinh-doanh',
+        'the-thao': 'the-thao',
+        'giai-tri': 'giai-tri',
+        'phap-luat': 'phap-luat',
+        'giao-duc': 'giao-duc',
+        'suc-khoe': 'suc-khoe',
+        'doi-song': 'doi-song',
+        'du-lich': 'du-lich',
+        'khoa-hoc': 'khoa-hoc',
+        'so-hoa': 'so-hoa',
+        'xe': 'oto-xe-may',
+        'y-kien': 'y-kien',
+        'tam-su': 'tam-su'
+    };
 
+    const categoryPath = categoryMap[category] || category;
+    const categoryUrl = `https://vnexpress.net/${categoryPath}`;
+
+    console.log(`Fetching category: ${categoryUrl}`);
+
+    let browser;
+    let page;
     try {
-        const browser = await puppeteer.launch({
-            headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        browser = await getBrowser();
+        page = await browser.newPage();
+        
+        // Set up request interception to block unnecessary resources
+        await page.setRequestInterception(true);
+        const blockedResources = ['image', 'stylesheet', 'font', 'media', 'other'];
+        page.on('request', (req) => {
+            if (blockedResources.includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
         });
 
-        const page = await browser.newPage();
-        
-        try {
-            // Set a user agent to avoid being blocked
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            
-            // Construct VnExpress category URL with proper encoding
-            const baseUrl = 'https://vnexpress.net';
-            const categoryUrl = `${baseUrl}/${category}`;
-            
-            console.log(`Attempting to fetch category: ${categoryUrl}`);
-            
-            // Navigate to the category URL with better error handling
-            console.log(`Navigating to: ${categoryUrl}`);
-            const response = await page.goto(categoryUrl, { 
-                waitUntil: 'networkidle2',
-                timeout: 30000
-            });
-            
-            if (!response || !response.ok()) {
-                throw new Error(`Failed to load page: ${response ? response.status() : 'No response'}`);
-            }
-            
-            // Wait for the article list to load with a longer timeout
-            await page.waitForSelector('article.item-news', { timeout: 15000 })
-                .catch(() => console.log('Article list not found, trying to continue...'));
+        // Set user agent and headers
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        });
 
-            // Extract the articles using page.evaluate
-            const articles = await page.evaluate(() => {
-                const articleElements = Array.from(document.querySelectorAll('article.item-news'));
-                return articleElements.map(article => {
-                    const titleElement = article.querySelector('h2.title-news a, h3.title-news a, h2.title-news a, h3.title-news a');
-                    const descriptionElement = article.querySelector('.description a, .description');
-                    const imageElement = article.querySelector('.thumb-art img, .thumb-art picture img, img.thumb, img[data-src]');
+        // Navigate to the category page
+        console.log(`Navigating to: ${categoryUrl}`);
+        const response = await page.goto(categoryUrl, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+        });
+
+        if (!response || !response.ok()) {
+            throw new Error(`Failed to load category page: ${response ? response.status() : 'No response'}`);
+        }
+
+        // Wait for articles to load with a shorter timeout
+        try {
+            await page.waitForSelector('.item-news, article, .list-news .title-news a, .title-news', { 
+                timeout: 10000 
+            });
+        } catch (e) {
+            console.log('Articles not found with primary selector, trying alternatives...');
+        }
+
+        // Extract article data with multiple fallback selectors
+        const articles = await page.evaluate((category, categoryUrl) => {
+            // Try multiple selectors to find articles
+            const selectors = [
+                '.item-news', 
+                'article', 
+                '.list-news .title-news a',
+                '.title-news',
+                'h2.title-news a',
+                'h3.title-news a',
+                '.title-news a',
+                '.list-news .title-news',
+                '.list-news h2 a',
+                '.list-news h3 a'
+            ];
+
+            let articleElements = [];
+            for (const selector of selectors) {
+                const elements = Array.from(document.querySelectorAll(selector));
+                if (elements.length > 0) {
+                    articleElements = elements;
+                    break;
+                }
+            }
+
+            const fallbackArticles = Array.from(articleElements).map(el => {
+                try {
+                    const titleEl = el.querySelector('h2, h3, a') || el;
+                    const link = el.href || (el.querySelector('a')?.href || '');
+                    const title = titleEl?.textContent?.trim() || '';
                     
-                    // Get URL from data-src if available, otherwise use src
-                    let imageUrl = '';
-                    if (imageElement) {
-                        imageUrl = imageElement.getAttribute('data-src') || 
-                                 imageElement.getAttribute('src') || '';
-                        // Convert to full URL if it's a relative path
-                        if (imageUrl.startsWith('//')) {
-                            imageUrl = 'https:' + imageUrl;
-                        } else if (imageUrl.startsWith('/')) {
-                            imageUrl = 'https://vnexpress.net' + imageUrl;
-                        }
-                    }
-                    
-                    // Get the article URL
-                    let articleUrl = '';
-                    if (titleElement && titleElement.href) {
-                        articleUrl = titleElement.href;
-                    } else if (article.querySelector('a')) {
-                        articleUrl = article.querySelector('a').href;
-                    }
-                    
-                    // Get title text
-                    let titleText = 'Không có tiêu đề';
-                    if (titleElement && titleElement.textContent) {
-                        titleText = titleElement.textContent.trim();
-                    } else if (article.querySelector('h2, h3')) {
-                        titleText = article.querySelector('h2, h3').textContent.trim();
-                    }
-                    
-                    // Get description text
-                    let descriptionText = '';
-                    if (descriptionElement && descriptionElement.textContent) {
-                        descriptionText = descriptionElement.textContent.trim();
-                    }
+                    if (!title || !link) return null;
                     
                     return {
-                        title: titleText,
-                        url: articleUrl,
-                        description: descriptionText,
-                        image: imageUrl,
-                        source: 'VnExpress',
-                        time: '' // We'll leave this empty for now
+                        title: title,
+                        url: link,
+                        description: '',
+                        image: ''
                     };
-                }).filter(article => article.url); // Filter out articles without URLs
-            });
-
-            if (!articles || articles.length === 0) {
-                // Try an alternative selector if no articles found
-                const fallbackArticles = await page.evaluate(() => {
-                    const items = Array.from(document.querySelectorAll('.item-news, .item-news-common, .list-news-subfolder .item-news, .list-news-subfolder .item-news-common'));
-                    return items.map(item => {
-                        const titleEl = item.querySelector('h2 a, h3 a, h2.title-news a, h3.title-news a, a.title-news, .title-news a');
-                        const descEl = item.querySelector('.description, .description a, .sapo, .sapo a');
-                        const imgEl = item.querySelector('img[data-src], img[src]');
-                        
-                        let imgUrl = '';
-                        if (imgEl) {
-                            imgUrl = imgEl.getAttribute('data-src') || imgEl.getAttribute('src') || '';
-                            if (imgUrl.startsWith('//')) imgUrl = 'https:' + imgUrl;
-                            else if (imgUrl.startsWith('/')) imgUrl = 'https://vnexpress.net' + imgUrl;
-                        }
-                        
-                        return {
-                            title: titleEl ? titleEl.textContent.trim() : 'Không có tiêu đề',
-                            url: titleEl ? titleEl.href : (item.querySelector('a') ? item.querySelector('a').href : ''),
-                            description: descEl ? descEl.textContent.trim() : '',
-                            image: imgUrl,
-                            source: 'VnExpress',
-                            time: ''
-                        };
-                    }).filter(article => article.url);
-                });
-                
-                if (fallbackArticles && fallbackArticles.length > 0) {
-                    console.log('Used fallback selector to find articles');
-                    return res.json({
-                        category: category,
-                        articles: fallbackArticles,
-                        source: 'vnexpress',
-                        sourceName: 'VnExpress',
-                        sourceUrl: categoryUrl
-                    });
+                } catch (e) {
+                    console.error('Error processing article:', e);
+                    return null;
                 }
-                
-                throw new Error('Không tìm thấy bài viết nào trong chuyên mục này');
+            }).filter(article => article !== null);
+            
+            if (fallbackArticles.length > 0) {
+                console.log('Used fallback selector to find articles');
+                return {
+                    articles: fallbackArticles,
+                    usedFallback: true
+                };
             }
+            
+            throw new Error('Không tìm thấy bài viết nào trong chuyên mục này');
+        }, category, categoryUrl);
 
-            // Return the articles in the expected format
-            res.json({
-                category: category,
-                articles: articles,
-                source: 'vnexpress',
-                sourceName: 'VnExpress',
-                sourceUrl: categoryUrl
-            });
+        // Cache the result
+        categoryCache.set(cacheKey, {
+            category: category,
+            articles: articles.articles,
+            source: 'vnexpress',
+            sourceName: 'VnExpress',
+            sourceUrl: categoryUrl
+        });
 
-        } catch (error) {
-            console.error('Error in page navigation or extraction:', error);
-            res.status(500).json({ 
-                error: 'Không thể lấy danh sách bài viết',
-                details: error.message 
-            });
-        } finally {
-            await page.close();
-            await browser.close();
-        }
+        // Return the articles in the expected format
+        return res.json({
+            category: category,
+            articles: articles.articles,
+            source: 'vnexpress',
+            sourceName: 'VnExpress',
+            sourceUrl: categoryUrl
+        });
     } catch (error) {
-        console.error('Error launching browser:', error);
+        console.error('Error in page navigation or extraction:', error);
         res.status(500).json({ 
-            error: 'Lỗi khởi tạo trình duyệt', 
+            error: 'Không thể lấy danh sách bài viết',
             details: error.message 
         });
+    } finally {
+        if (page) await page.close();
+        if (browser) await browser.close();
     }
 });
 
