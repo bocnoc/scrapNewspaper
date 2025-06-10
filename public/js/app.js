@@ -94,20 +94,33 @@ document.addEventListener('DOMContentLoaded', function() {
 
         try {
             // Show loading state
-            fetchButton.disabled = true;
-            fetchButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang tải...';
+            if (articleBody) {
+                articleBody.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Đang tải bài viết...</div>';
+            }
             
+            // Show article view
+            showArticleView();
+            
+            // Update URL to reflect the current article
+            const cleanUrl = url.replace(/^https?:\/\//, '');
+            window.history.pushState({ articleUrl: url }, '', `/${cleanUrl}`);
+            
+            // Use the fetch-article endpoint and send URL in the request body
             const response = await fetch('/api/fetch-article', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({ url: url })
             });
-
+            
+            if (!response.ok) {
+                throw new Error('Không thể tải bài viết');
+            }
+            
             const data = await response.json();
             
-            if (response.ok) {
+            if (data) {
                 // Update the current article
                 currentArticle = {
                     url: url,
@@ -120,11 +133,18 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (error) {
             console.error('Error fetching article:', error);
-            alert('Đã xảy ra lỗi khi tải bài báo: ' + (error.message || 'Vui lòng thử lại sau.'));
-        } finally {
-            // Reset button state
-            fetchButton.disabled = false;
-            fetchButton.innerHTML = '<i class="fas fa-search"></i> Đọc báo';
+            if (articleBody) {
+                articleBody.innerHTML = `
+                    <div class="error">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>${error.message || 'Có lỗi xảy ra khi tải bài viết'}</p>
+                        <button class="back-button" onclick="window.history.back()">
+                            <i class="fas fa-arrow-left"></i> Quay lại
+                        </button>
+                    </div>`;
+            } else {
+                alert('Đã xảy ra lỗi khi tải bài báo: ' + (error.message || 'Vui lòng thử lại sau.'));
+            }
         }
     }
 
@@ -138,9 +158,19 @@ document.addEventListener('DOMContentLoaded', function() {
         let content = article.content || '';
         
         if (!content) {
-            articleBody.innerHTML = '<p>Không thể tải nội dung. Vui lòng thử lại hoặc xem bài gốc.</p>';
+            articleBody.innerHTML = `
+                <div class="error">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>Không thể tải nội dung. Vui lòng thử lại hoặc xem bài gốc.</p>
+                    <button class="back-button" onclick="window.history.back()">
+                        <i class="fas fa-arrow-left"></i> Quay lại
+                    </button>
+                </div>`;
             return;
         }
+        
+        // Remove any images from content
+        content = content.replace(/<img[^>]*>/g, '');
         
         // Add click handlers for category links and tags
         setTimeout(() => {
@@ -371,18 +401,50 @@ function displayCategoryArticles(data) {
                     </div>`;
             }
             
-            articleEl.innerHTML = `
-                <div class="article-content">
-                    <h3 class="article-title">
-                        <a href="${article.url}" target="_blank">
-                            ${article.title || 'Không có tiêu đề'}
-                        </a>
-                    </h3>
-                    ${article.description ? `<p class="article-description">${article.description}</p>` : ''}
-                    <a href="${article.url}" target="_blank" class="read-more">
-                        Đọc tiếp <i class="fas fa-arrow-right"></i>
-                    </a>
-                </div>`;
+            // Create article content container
+            const articleContent = document.createElement('div');
+            articleContent.className = 'article-content';
+            
+            // Create title element
+            const titleEl = document.createElement('h3');
+            titleEl.className = 'article-title';
+            
+            // Create title link
+            const titleLink = document.createElement('a');
+            titleLink.href = '#';
+            titleLink.className = 'article-link';
+            titleLink.textContent = article.title || 'Không có tiêu đề';
+            titleLink.onclick = (e) => {
+                e.preventDefault();
+                fetchArticle(article.url);
+            };
+            
+            // Skip adding images as per requirement
+            
+            // Build the article structure
+            titleEl.appendChild(titleLink);
+            articleContent.appendChild(titleEl);
+            
+            // Add description if available
+            if (article.description) {
+                const descEl = document.createElement('p');
+                descEl.className = 'article-description';
+                descEl.textContent = article.description;
+                articleContent.appendChild(descEl);
+            }
+            
+            // Add read more button
+            const readMore = document.createElement('a');
+            readMore.href = '#';
+            readMore.className = 'read-more article-link';
+            readMore.innerHTML = 'Đọc tiếp <i class="fas fa-arrow-right"></i>';
+            readMore.onclick = (e) => {
+                e.preventDefault();
+                fetchArticle(article.url);
+            };
+            
+            articleContent.appendChild(readMore);
+            articleEl.appendChild(articleContent);
                 
             articlesGrid.appendChild(articleEl);
         });
@@ -398,16 +460,19 @@ function displayCategoryArticles(data) {
     articleBody.appendChild(container);
     
     // Add click event for article cards
-    container.querySelectorAll('.article-card').forEach(card => {
-        card.addEventListener('click', (e) => {
-            // Only navigate if the click wasn't on a link
-            if (e.target.tagName !== 'A') {
-                const link = card.querySelector('a[target="_blank"]');
-                if (link) {
-                    window.open(link.href, '_blank');
+    container.addEventListener('click', (e) => {
+        const articleCard = e.target.closest('.article-card');
+        if (articleCard) {
+            e.preventDefault();
+            const link = articleCard.querySelector('.article-link');
+            if (link) {
+                const url = link.getAttribute('data-url') || link.href;
+                if (url && url !== '#') {
+                    fetchArticle(url);
                 }
             }
-        });
+            return false;
+        }
     });
 }
 
@@ -415,7 +480,9 @@ function displayCategoryArticles(data) {
 function showArticleView() {
     document.querySelector('.url-input-section').style.display = 'none';
     document.querySelector('.popular-sources').style.display = 'none';
-    articleContent.style.display = 'block';
+    if (articleContent) {
+        articleContent.style.display = 'block';
+    }
     
     // Scroll to top
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -433,13 +500,40 @@ function showSourcesView() {
 }
     
 // Handle back button (browser back/forward)
-
-    
-// Handle back button (browser back/forward)
 window.addEventListener('popstate', function(event) {
-    if (articleContent.style.display === 'block') {
+    if (event.state) {
+        if (event.state.articleUrl) {
+            // Handle article URL state
+            const articleUrl = event.state.articleUrl;
+            fetchArticle(articleUrl);
+        } else if (event.state.category) {
+            // Handle category state
+            fetchArticlesByCategory(event.state.category);
+        } else {
+            // Default to showing sources view
+            showSourcesView();
+        }
+    } else {
+        // No state, show sources view
         showSourcesView();
     }
 });
+
+// Handle initial page load
+function handleInitialLoad() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const category = urlParams.get('category');
+    
+    if (category) {
+        fetchArticlesByCategory(category);
+    } else if (window.location.pathname !== '/') {
+        // If there's a path that's not the root, try to load it as an article
+        const articleUrl = 'https:' + window.location.pathname + window.location.search + window.location.hash;
+        fetchArticle(articleUrl);
+    }
+}
+
+// Initialize the app
+handleInitialLoad();
 
 });
