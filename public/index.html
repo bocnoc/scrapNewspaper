@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Đọc Báo Nhanh - Phiên bản nhẹ</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Đọc Báo Nhanh</h1>
+            <p class="tagline">Phiên bản nhẹ - Tải nhanh - Đọc dễ dàng</p>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="url-input-section">
+            <h2>Đọc báo từ URL</h2>
+            <div class="input-group">
+                <input type="url" id="article-url" placeholder="Dán link bài báo vào đây..." required>
+                <button id="fetch-article">
+                    <i class="fas fa-search"></i> Đọc báo
+                </button>
+            </div>
+        </section>
+
+        <section class="vnexpress-categories">
+            <h2>Danh mục VnExpress</h2>
+            <div class="categories-grid" id="vnexpress-categories">
+                <a href="#" class="category-card" data-category="thoi-su">
+                    <i class="fas fa-newspaper"></i>
+                    <span>Thời sự</span>
+                </a>
+                <a href="#" class="category-card" data-category="the-gioi">
+                    <i class="fas fa-globe-asia"></i>
+                    <span>Thế giới</span>
+                </a>
+                <a href="#" class="category-card" data-category="kinh-doanh">
+                    <i class="fas fa-chart-line"></i>
+                    <span>Kinh doanh</span>
+                </a>
+                <a href="#" class="category-card" data-category="the-thao">
+                    <i class="fas fa-futbol"></i>
+                    <span>Thể thao</span>
+                </a>
+                <a href="#" class="category-card" data-category="giai-tri">
+                    <i class="fas fa-film"></i>
+                    <span>Giải trí</span>
+                </a>
+                <a href="#" class="category-card" data-category="phap-luat">
+                    <i class="fas fa-gavel"></i>
+                    <span>Pháp luật</span>
+                </a>
+            </div>
+        </section>
+
+        <section class="popular-sources">
+            <h2>Báo phổ biến</h2>
+            <div class="sources-grid" id="sources-container">
+                <!-- Sources will be loaded here -->
+                <div class="loading">Đang tải danh sách báo...</div>
+            </div>
+        </section>
+
+        <section class="article-content" id="article-content" style="display: none;">
+            <div class="article-header">
+                <h2 id="article-title"></h2>
+                <a href="#" id="original-link" target="_blank" class="original-link">
+                    <i class="fas fa-external-link-alt"></i> Xem bài gốc
+                </a>
+                <button id="back-to-sources" class="back-button">
+                    <i class="fas fa-arrow-left"></i> Quay lại
+                </button>
+            </div>
+            <div class="article-body" id="article-body">
+                <!-- Article content will be loaded here -->
+            </div>
+        </section>
+    </main>
+
+
+    <footer>
+        <div class="container">
+            <p>© 2024 Đọc Báo Nhanh - Phiên bản nhẹ dành cho mạng chậm</p>
+        </div>
+    </footer>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>
