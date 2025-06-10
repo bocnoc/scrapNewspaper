@@ -83,36 +83,41 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Cache for storing fetched articles
+    const articleCache = new Map();
+
     // Fetch and display article content
     async function fetchArticle(articleUrl) {
-        const url = articleUrl || urlInput.value.trim();
+        if (!articleUrl) return;
         
-        if (!url) {
-            alert('Vui lòng nhập URL bài báo');
+        // Show loading state
+        articleBody.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Đang tải bài viết...</div>';
+        articleTitle.textContent = 'Đang tải...';
+        
+        // Update URL without page reload
+        window.history.pushState({ articleUrl: articleUrl }, '', `/?url=${encodeURIComponent(articleUrl)}`);
+        
+        // Check cache first
+        const cachedArticle = articleCache.get(articleUrl);
+        if (cachedArticle) {
+            displayArticle(cachedArticle);
             return;
         }
-
+        
         try {
-            // Show loading state
-            if (articleBody) {
-                articleBody.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Đang tải bài viết...</div>';
-            }
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
             
-            // Show article view
-            showArticleView();
-            
-            // Update URL to reflect the current article
-            const cleanUrl = url.replace(/^https?:\/\//, '');
-            window.history.pushState({ articleUrl: url }, '', `/${cleanUrl}`);
-            
-            // Use the fetch-article endpoint and send URL in the request body
             const response = await fetch('/api/fetch-article', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ url: url })
+                body: JSON.stringify({ url: articleUrl }),
+                signal: controller.signal
             });
+            
+            clearTimeout(timeoutId);
             
             if (!response.ok) {
                 throw new Error('Không thể tải bài viết');
@@ -120,31 +125,29 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const data = await response.json();
             
-            if (data) {
-                // Update the current article
-                currentArticle = {
-                    url: url,
-                    title: data.title
-                };
-                
-                displayArticle(data);
-            } else {
-                throw new Error(data.error || 'Không thể tải bài báo');
+            // Cache the article
+            articleCache.set(articleUrl, data);
+            
+            // Limit cache size
+            if (articleCache.size > 20) {
+                const firstKey = articleCache.keys().next().value;
+                articleCache.delete(firstKey);
             }
+            
+            displayArticle(data);
         } catch (error) {
             console.error('Error fetching article:', error);
-            if (articleBody) {
-                articleBody.innerHTML = `
-                    <div class="error">
-                        <i class="fas fa-exclamation-triangle"></i>
-                        <p>${error.message || 'Có lỗi xảy ra khi tải bài viết'}</p>
-                        <button class="back-button" onclick="window.history.back()">
-                            <i class="fas fa-arrow-left"></i> Quay lại
-                        </button>
-                    </div>`;
-            } else {
-                alert('Đã xảy ra lỗi khi tải bài báo: ' + (error.message || 'Vui lòng thử lại sau.'));
-            }
+            articleBody.innerHTML = `
+                <div class="error">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>Không thể tải bài viết. Vui lòng thử lại.</p>
+                    <p>${error.name === 'AbortError' ? 'Yêu cầu đã hết thời gian chờ' : error.message}</p>
+                    <button class="retry-button" onclick="fetchArticle('${articleUrl}')">
+                        <i class="fas fa-sync-alt"></i> Thử lại
+                    </button>
+                </div>`;
+        } finally {
+            articleTitle.textContent = '';
         }
     }
 
@@ -416,6 +419,7 @@ function displayCategoryArticles(data) {
             titleLink.textContent = article.title || 'Không có tiêu đề';
             titleLink.onclick = (e) => {
                 e.preventDefault();
+                e.stopPropagation(); // Prevent the card's click handler from triggering
                 fetchArticle(article.url);
             };
             
@@ -440,12 +444,43 @@ function displayCategoryArticles(data) {
             readMore.innerHTML = 'Đọc tiếp <i class="fas fa-arrow-right"></i>';
             readMore.onclick = (e) => {
                 e.preventDefault();
+                e.stopPropagation(); // Prevent the card's click handler from triggering
                 fetchArticle(article.url);
             };
             
             articleContent.appendChild(readMore);
             articleEl.appendChild(articleContent);
-                
+            
+            // Make the entire card clickable
+            articleEl.style.cursor = 'pointer';
+            
+            // Store the article URL in a data attribute for easy access
+            articleEl.dataset.articleUrl = article.url;
+            
+            // Add click handler to the card
+            articleEl.addEventListener('click', function(e) {
+                // Only proceed if we didn't click on a link or button
+                if (!e.target.closest('a, button, .article-link, .read-more')) {
+                    e.preventDefault();
+                    const url = this.dataset.articleUrl;
+                    if (url) {
+                        fetchArticle(url);
+                    }
+                }
+            });
+            
+            // Make sure links inside the card work properly
+            const links = articleEl.querySelectorAll('a');
+            links.forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.stopPropagation(); // Prevent the card's click handler from triggering
+                    if (this.href === '#') {
+                        e.preventDefault();
+                        fetchArticle(article.url);
+                    }
+                });
+            });
+            
             articlesGrid.appendChild(articleEl);
         });
     }
