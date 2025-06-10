@@ -372,7 +372,6 @@ function displayCategoryArticles(data) {
             }
             
             articleEl.innerHTML = `
-                ${imageHtml}
                 <div class="article-content">
                     <h3 class="article-title">
                         <a href="${article.url}" target="_blank">
