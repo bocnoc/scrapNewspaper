@@ -86,27 +86,36 @@ document.addEventListener('DOMContentLoaded', function() {
     // Cache for storing fetched articles
     const articleCache = new Map();
 
-    // Fetch and display article content
-    async function fetchArticle(articleUrl) {
+    // Fetch and display article content with retry logic
+    async function fetchArticle(articleUrl, retryCount = 0) {
         if (!articleUrl) return;
         
+        // Show article view first
+        showArticleView();
+        
         // Show loading state
-        articleBody.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i> Đang tải bài viết...</div>';
         articleTitle.textContent = 'Đang tải...';
+        articleBody.innerHTML = `
+            <div class="loading">
+                <div class="spinner"></div>
+                <p>${retryCount > 0 ? `Đang thử lại (${retryCount}/2)...` : 'Đang tải bài viết, vui lòng chờ...'}</p>
+            </div>`;
         
         // Update URL without page reload
         window.history.pushState({ articleUrl: articleUrl }, '', `/?url=${encodeURIComponent(articleUrl)}`);
         
-        // Check cache first
-        const cachedArticle = articleCache.get(articleUrl);
-        if (cachedArticle) {
-            displayArticle(cachedArticle);
-            return;
+        // Check cache first (skip cache on retry)
+        if (retryCount === 0) {
+            const cachedArticle = articleCache.get(articleUrl);
+            if (cachedArticle) {
+                displayArticle(cachedArticle);
+                return;
+            }
         }
         
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
+            const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 seconds timeout
             
             const response = await fetch('/api/fetch-article', {
                 method: 'POST',
@@ -120,28 +129,44 @@ document.addEventListener('DOMContentLoaded', function() {
             clearTimeout(timeoutId);
             
             if (!response.ok) {
-                throw new Error('Không thể tải bài viết');
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.error || 'Không thể tải bài viết';
+                throw new Error(errorMessage);
             }
             
             const data = await response.json();
             
-            // Cache the article
-            articleCache.set(articleUrl, data);
-            
-            // Limit cache size
-            if (articleCache.size > 20) {
-                const firstKey = articleCache.keys().next().value;
-                articleCache.delete(firstKey);
+            // Cache the article only if it's not an error
+            if (!data.error) {
+                articleCache.set(articleUrl, data);
+                
+                // Limit cache size
+                if (articleCache.size > 20) {
+                    const firstKey = articleCache.keys().next().value;
+                    articleCache.delete(firstKey);
+                }
+                
+                displayArticle(data);
+            } else {
+                throw new Error(data.error);
             }
-            
-            displayArticle(data);
         } catch (error) {
             console.error('Error fetching article:', error);
+            
+            // Auto-retry logic (max 2 retries)
+            if (retryCount < 2 && !error.message.includes('404')) {
+                // Wait 1 second before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return fetchArticle(articleUrl, retryCount + 1);
+            }
+            
+            // Show error message
+            const errorMessage = error.message || 'Đã xảy ra lỗi không xác định';
             articleBody.innerHTML = `
                 <div class="error">
                     <i class="fas fa-exclamation-triangle"></i>
-                    <p>Không thể tải bài viết. Vui lòng thử lại.</p>
-                    <p>${error.name === 'AbortError' ? 'Yêu cầu đã hết thời gian chờ' : error.message}</p>
+                    <p>${errorMessage}</p>
+                    <p>URL: <small>${articleUrl}</small></p>
                     <button class="retry-button" onclick="fetchArticle('${articleUrl}')">
                         <i class="fas fa-sync-alt"></i> Thử lại
                     </button>

@@ -44,36 +44,60 @@ app.get('/', (req, res) => {
 
 // API endpoint to fetch article content
 app.post('/api/fetch-article', async (req, res) => {
+    let browser;
     try {
-        const { url } = req.body;
+        let { url } = req.body;
         
         if (!url) {
             return res.status(400).json({ error: 'Vui lòng cung cấp URL' });
         }
 
+        // Clean up the URL
+        url = url.trim();
+        // Remove any hash fragments
+        url = url.split('#')[0];
+        
+        // Ensure the URL has a protocol
+        if (!url.startsWith('http')) {
+            url = 'https://' + url.replace(/^\/\//, '');
+        }
+
         console.log(`Fetching article from: ${url}`);
 
-        const browser = await puppeteer.launch({
+        browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
             defaultViewport: { width: 1280, height: 800 }
         });
 
         const page = await browser.newPage();
         
+        // Set user agent to avoid detection
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        
+        // Enable request interception to block unnecessary resources
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const resourceType = req.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+        
         try {
-            // Set user agent to avoid detection
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            
             // Navigate to the article URL
             console.log(`Navigating to: ${url}`);
             const response = await page.goto(url, { 
-                waitUntil: 'networkidle2',
-                timeout: 60000 
+                waitUntil: ['domcontentloaded', 'networkidle0'],
+                timeout: 30000 // 30 seconds timeout
             });
 
             if (!response || !response.ok()) {
-                throw new Error(`Failed to load page: ${response ? response.status() : 'No response'}`);
+                const status = response ? response.status() : 'No response';
+                console.error(`Failed to load page: ${status} - ${url}`);
+                throw new Error(`Không thể tải trang: Lỗi ${status}`);
             }
             // Set a user agent to avoid being blocked
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
