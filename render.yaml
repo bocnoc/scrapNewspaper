@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: doc-bao-nhanh
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+    plan: free
+    region: singapore  # Chọn Singapore để có tốc độ tốt hơn cho người dùng Việt Nam

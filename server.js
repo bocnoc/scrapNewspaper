@@ -40,6 +40,13 @@ async function getBrowser() {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Chỉ lắng nghe nếu không chạy trong môi trường Lambda
+if (process.env.NODE_ENV !== 'production' || process.env.IS_LOCAL) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
 // Sample category mapping for popular Vietnamese news sites
 const CATEGORY_MAPPING = {
     'kinh doanh': ['/kinh-doanh', '/tai-chinh', '/thi-truong'],
